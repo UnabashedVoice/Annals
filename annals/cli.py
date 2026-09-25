@@ -166,6 +166,17 @@ def cmd_challenges(args) -> int:
 
 
 def main(argv=None) -> int:
+    # Entries carry free text written by whoever recorded them (a
+    # recommendation, testimony, a reviewer's reasoning) and can contain
+    # arbitrary Unicode; `show`/`export` print that text back. A narrower
+    # default console codepage would raise on it instead of printing.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
     ap = argparse.ArgumentParser(prog="annals", description="The append-only record of recommendations and what followed.")
     ap.add_argument("--record", help=f"record file (default $ANNALS_RECORD or {DEFAULT_RECORD})")
     sub = ap.add_subparsers(dest="cmd", required=True)
