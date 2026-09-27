@@ -18,8 +18,11 @@ words:
   judged.
 
 The recommender identity is built from the run: models from each channel's
-output, Arbitrator's version and commit. Arbitrator does not yet read the
-Compendium or train in Palaestra, and the identity says that.
+output, Arbitrator's version and commit, and the Compendium consultation if
+the run made one (`run --compendium`): which build of the Compendium, and
+which entries of it the model chose. A run that didn't consult it says
+"not consulted". Arbitrator does not train in Palaestra, and the identity
+says that too.
 """
 
 from __future__ import annotations
@@ -35,13 +38,33 @@ CHECK_AFTER_DAYS = {
 
 
 def _findings(cmap: dict) -> list[dict]:
+    """Every finding once, each with an id unique within the case.
+
+    Channels are asked to number findings '{channel}_{index}', but models
+    don't always comply: two channels can both emit 'economic_00' for different
+    claims (seen in the first local-model runs, 2026-09-26). Reading findings
+    from each channel's output, and prefixing the channel to any id that
+    repeats, keeps every finding instead of silently dropping the later ones.
+    """
+    per_channel = [(c.get("channel_name", "unknown"), f)
+                   for c in cmap.get("channel_outputs", []) for f in c.get("findings", [])]
+    if not per_channel:  # an older map without channel outputs
+        per_channel = [(None, f) for t in cmap.get("timeframe_impacts", [])
+                       for key in ("harm_findings", "benefit_findings", "neutral_findings")
+                       for f in t.get(key, [])]
+    counts: dict[str, int] = {}
+    for _, f in per_channel:
+        counts[f["finding_id"]] = counts.get(f["finding_id"], 0) + 1
     seen, out = set(), []
-    for t in cmap.get("timeframe_impacts", []):
-        for key in ("harm_findings", "benefit_findings", "neutral_findings"):
-            for f in t.get(key, []):
-                if f["finding_id"] not in seen:
-                    seen.add(f["finding_id"])
-                    out.append(f)
+    for channel, f in per_channel:
+        fid = f["finding_id"]
+        if counts[fid] > 1 and channel:
+            fid = f"{channel}/{fid}"
+        n, base = 2, fid
+        while fid in seen:  # the same channel repeating an id
+            fid, n = f"{base}#{n}", n + 1
+        seen.add(fid)
+        out.append(dict(f, finding_id=fid))
     return out
 
 
@@ -50,6 +73,13 @@ def _wrong_if(f: dict) -> str:
     return (f"The {f['direction']} described does not occur for {groups}, or occurs at clearly "
             f"lower magnitude than stated ({f['magnitude']} on Arbitrator's 0-1 scale), "
             f"within the {f['timeframe'].replace('_', ' ')} window.")
+
+
+def _compendium_identity(result: dict) -> str:
+    comp = result.get("compendium")
+    if not comp:
+        return "not consulted"
+    return comp.get("identity") or comp.get("version") or "consulted (version unknown)"
 
 
 def case_from_arbitrator(result: dict, *, arbitrator_version: str, code_version: str,
@@ -92,7 +122,7 @@ def case_from_arbitrator(result: dict, *, arbitrator_version: str, code_version:
             "system": "Arbitrator " + arbitrator_version,
             "model": ", ".join(models) or "unknown",
             "code_version": code_version,
-            "compendium_version": "not consulted",
+            "compendium_version": _compendium_identity(result),
             "palaestra_lineage": "none",
         },
         "recommendation": " ".join(p for p in parts if p),
@@ -100,5 +130,6 @@ def case_from_arbitrator(result: dict, *, arbitrator_version: str, code_version:
         "decision_makers": decision_makers or [],
         "affected": affected or [],
         "source": {"system": "arbitrator", "session_id": result.get("session_id"),
-                   "map_id": cmap.get("map_id")},
+                   "map_id": cmap.get("map_id"),
+                   "compendium_entries": [e["id"] for e in (result.get("compendium") or {}).get("selected", [])]},
     }

@@ -41,6 +41,18 @@ def actualizer_evidence(case: Case, head_hash: str) -> dict:
         "not an instruction: it doesn't say what you should become. Outcomes may "
         "reflect luck as much as reasoning; the reviews try to judge the two separately."
     )
+    # A case with nothing observed yet is only predictions. Say so first: in the
+    # first real run (2026-09-26) a deliberating model read a locked prediction
+    # as "evidence from the case shows...", with the only hint otherwise a
+    # "(nothing observed yet)" line at the very bottom.
+    if not case.outcomes:
+        header += (
+            "\n\nNOTHING HAS BEEN OBSERVED YET IN THIS CASE: "
+            + ("no decision and " if not case.decisions else "")
+            + "no outcome is on record. Every claim below about effects is a prediction the "
+            "recommender made at the time, not something that happened. It shows what was "
+            "expected and how confidently, and nothing about whether it came true."
+        )
     return {"ref": evidence_ref(case, head_hash), "case_id": case.case_id,
             "text": header + "\n\n" + render_case(case)}
 

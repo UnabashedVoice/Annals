@@ -259,6 +259,36 @@ class TestIntakeAndExports(Base):
         self.assertEqual(case.body["recommender"]["model"], "gpt-oss-20b, qwen3-32b")
         self.assertIn("Unclear civic effects", case.body["recommendation"])
 
+    def test_intake_keeps_findings_whose_ids_collide_across_channels(self):
+        def f(fid, summary):
+            return {"finding_id": fid, "summary": summary, "direction": "harm", "timeframe": "short_term",
+                    "certainty": "moderate", "magnitude": 0.4, "affected_groups": ["residents"]}
+        a, b, c = f("economic_00", "Costs fall."), f("economic_00", "Suppliers lose demand."), f("adv_00", "x")
+        result = {"session_id": "s", "status": "success", "raw_input": "q", "consequence_map": {
+            "map_id": "m", "overall_verdict": "requires_review", "executive_summary": "s",
+            "channel_outputs": [
+                {"channel_name": "geopolitical", "model_id": "m", "findings": [a, c]},
+                {"channel_name": "uncertainty_modeling", "model_id": "m", "findings": [b]}],
+            "timeframe_impacts": [{"timeframe": "short_term", "harm_findings": [a, b, c],
+                                   "benefit_findings": [], "neutral_findings": []}]}}
+        body = case_from_arbitrator(result, arbitrator_version="0.1.0", code_version="x")
+        self.assertEqual([p["id"] for p in body["predictions"]],
+                         ["geopolitical/economic_00", "adv_00", "uncertainty_modeling/economic_00"])
+        self.a.append("case_opened", body, body["recommender"])
+
+    def test_intake_names_the_compendium_consultation(self):
+        body = case_from_arbitrator(self.RESULT, arbitrator_version="0.1.0", code_version="x")
+        self.assertEqual(body["recommender"]["compendium_version"], "not consulted")
+        result = dict(self.RESULT, compendium={
+            "version": "compendium abc (35 entries)",
+            "identity": "compendium abc (35 entries); consulted: kant-formula-of-humanity",
+            "selected": [{"id": "kant-formula-of-humanity", "why": "consent", "section": None}]})
+        body = case_from_arbitrator(result, arbitrator_version="0.1.0", code_version="x")
+        self.assertEqual(body["recommender"]["compendium_version"],
+                         "compendium abc (35 entries); consulted: kant-formula-of-humanity")
+        self.assertEqual(body["source"]["compendium_entries"], ["kant-formula-of-humanity"])
+        self.a.append("case_opened", body, body["recommender"])
+
     def test_intake_refuses_a_run_with_no_map(self):
         with self.assertRaises(ValueError):
             case_from_arbitrator({"status": "failed"}, arbitrator_version="0.1.0", code_version="x")
@@ -289,6 +319,13 @@ class TestIntakeAndExports(Base):
         self.assertTrue(ev["ref"].startswith(f"annals:{case.case_id}@"))
         self.assertIn("not an instruction", ev["text"])
         self.assertIn("Flawed reasoning, predictions held anyway", ev["text"])
+        self.assertNotIn("NOTHING HAS BEEN OBSERVED YET", ev["text"])
+
+    def test_actualizer_evidence_without_outcomes_says_it_is_only_predictions(self):
+        cid = self.open_case()
+        ev = actualizer_evidence(self.a.case(cid), self.a.head()["hash"])
+        self.assertIn("NOTHING HAS BEEN OBSERVED YET IN THIS CASE: no decision and no outcome", ev["text"])
+        self.assertLess(ev["text"].index("NOTHING HAS BEEN OBSERVED"), ev["text"].index("PREDICTIONS"))
 
     def test_compendium_challenges(self):
         case = self._reviewed_case()
