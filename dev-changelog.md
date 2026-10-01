@@ -15,8 +15,24 @@ Annals (`github.com/UnabashedVoice/Annals`) is the fifth component of the stack.
 | 2026-09-25 00:10 | `dc01dc9` initial commit, with matching wiring commits in Arbitrator, Actualizer and Palaestra at the same second. Published on GitHub |
 | 2026-09-25 10:44 | `7fb86a7` UTF-8 console guard (30 tests) |
 | 2026-09-26 | Compendium identity in intake, a fix for colliding finding ids, the "nothing observed yet" evidence header (33 tests). First real use: a 5-question batch writing to a test record (committed 2026-09-27) |
+| 2026-09-28 → 09-29 | Ethics-blocked Arbitrator runs recorded as cases; escalation and decision brief as separate case fields (38 tests; committed 2026-10-01, alongside Arbitrator-AI `02088c0`) |
 
 ---
+
+## 2026-09-28 to 09-29 (committed 2026-10-01)
+
+### Added
+- **Ethics-blocked Arbitrator runs are recorded** (`intake._case_from_block`). This was the user's decision, 2026-09-28: a block is a recommendation too.
+  - Recommender: `model` says none was consulted, and `compendium_version` says the run stopped before the consultation.
+  - One prediction, `ethics_core_block`: carried out, the action does more harm than good, with the Ethics Core's weighted harm, benefit and net score. For a hard reject, the prediction is that it crosses the named constraints.
+  - `wrong_if` says the prediction can only be marked unresolvable if the action is never carried out. `check_after` comes from the parsed time horizon. Confidence is the Ethics Core's own, labeled as not a calibrated probability.
+  - `source.blocked`, `stage`, `ethics_verdict` and `hard_constraints` mark the case.
+  - Checked end to end through the real `arbitrator run --annals` on default settings (q5, the seawall tax, is blocked at the pre-screen). The Palaestra and Actualizer exports handle blocked cases. 35 tests.
+
+- **Escalation and brief are separate case fields** (2026-09-29).
+  - `escalation` now holds only what triggered human review.
+  - `brief` holds the decision brief, which every analysed run now has. Its options carry their cases for and against, and the recommendation gives the lean's reasoning.
+  - `render_case` shows both sections. 38 tests.
 
 ## 2026-09-26: Compendium wiring (committed 2026-09-27)
 

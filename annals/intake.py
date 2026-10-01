@@ -7,6 +7,11 @@ in this timeframe, with this certainty. Intake turns each finding into a
 prediction and locks it, so that when the timeframe comes round there is
 something specific to check.
 
+A run the Ethics Core stopped before any channel ran has no consequence
+map, but it is still a recommendation (don't do this), so it is recorded
+too: one prediction that the action, if carried out, does more harm than
+good (or crosses the named hard constraints). See _case_from_block.
+
 Two things are derived rather than stated by Arbitrator, and each
 prediction says so, so nobody mistakes the derivation for Arbitrator's own
 words:
@@ -82,12 +87,88 @@ def _compendium_identity(result: dict) -> str:
     return comp.get("identity") or comp.get("version") or "consulted (version unknown)"
 
 
+def _case_from_block(result: dict, *, arbitrator_version: str, code_version: str, question: str | None,
+                     decision_makers: list | None, affected: list | None, today: date) -> dict:
+    """A case for a run the Ethics Core stopped before any channel ran.
+
+    A block is a recommendation too (don't do this), and if the decision-makers
+    go ahead anyway, the look-back is exactly where it matters. It implies one
+    checkable prediction: carried out, the action does more harm than good (or,
+    for a hard reject, crosses the named constraints). The scores behind it are
+    structural estimates from the parsed proposal, made before any model looked
+    at it, and the case says so. If the action is never carried out, the
+    prediction can only be marked unresolvable: the road not taken is never
+    observed.
+    """
+    ev = result["ethics_evaluation"]
+    verdict = ev.get("verdict", "unknown")
+    constraints = ev.get("hard_constraints_triggered") or []
+    scores = (f"weighted harm {ev.get('weighted_harm')}, weighted benefit {ev.get('weighted_benefit')}, "
+              f"net {ev.get('net_score')}")
+    horizon = ((result.get("manifest") or {}).get("context") or {}).get("time_horizon")
+    horizon = horizon if horizon in CHECK_AFTER_DAYS else "short_term"
+
+    if constraints:
+        claim = ("Carried out as proposed, this action would cross these hard constraints: "
+                 + "; ".join(constraints) + ".")
+        wrong_if = ("The action is carried out as proposed and, judged by what is then observed, "
+                    "crosses none of the named constraints.")
+    else:
+        claim = (f"Carried out as proposed, this action's harms would outweigh its benefits "
+                 f"(Ethics Core structural estimate: {scores}).")
+        wrong_if = ("The action is carried out as proposed, and its observed benefits to those affected "
+                    f"clearly outweigh its harms within the {horizon.replace('_', ' ')} window.")
+    wrong_if += " If the action is never carried out, this prediction can only be marked unresolvable."
+
+    parts = [f"Arbitrator declined to analyse this proposal: its Ethics Core pre-screen returned "
+             f"'{verdict}', and the pipeline stopped before any channel or model ran.",
+             f"Justification: {ev.get('justification', '').strip()}",
+             f"The scores ({scores}) are structural estimates derived from the parsed proposal, "
+             "not the result of analysis."]
+    if constraints:
+        parts.append("Hard constraints triggered: " + "; ".join(constraints) + ".")
+    if ev.get("flags"):
+        parts.append("Flags: " + " ".join(ev["flags"]))
+
+    return {
+        "question": question or result.get("raw_input", ""),
+        "recommender": {
+            "system": "Arbitrator " + arbitrator_version,
+            "model": "none: stopped by the Ethics Core (deterministic code) before any model was consulted",
+            "code_version": code_version,
+            "compendium_version": "not consulted (the run was stopped before the consultation)",
+            "palaestra_lineage": "none",
+        },
+        "recommendation": " ".join(parts),
+        "predictions": [{
+            "id": "ethics_core_block",
+            "claim": claim,
+            "confidence": ev["confidence"] if "confidence" in ev else 0.5,
+            "confidence_basis": ("the Ethics Core's self-reported confidence in its own structural evaluation; "
+                                 "not a calibrated probability about the outcome") if "confidence" in ev
+                                else "not reported by the Ethics Core; 0.5 recorded as no information",
+            "wrong_if": wrong_if,
+            "check_after": (today + timedelta(days=CHECK_AFTER_DAYS[horizon])).isoformat(),
+            "derived_from": f"arbitrator ethics_core verdict '{verdict}' (the run was blocked)",
+        }],
+        "decision_makers": decision_makers or [],
+        "affected": affected or [],
+        "source": {"system": "arbitrator", "session_id": result.get("session_id"), "map_id": None,
+                   "blocked": True, "stage": "ethics_core", "ethics_verdict": verdict,
+                   "hard_constraints": constraints, "compendium_entries": []},
+    }
+
+
 def case_from_arbitrator(result: dict, *, arbitrator_version: str, code_version: str,
                          question: str | None = None, decision_makers: list | None = None,
                          affected: list | None = None, today: date | None = None) -> dict:
     """Build a case_opened body from an Arbitrator PipelineResult dict."""
     today = today or date.today()
     cmap = result.get("consequence_map") or {}
+    if not cmap and result.get("status") == "ethics_blocked" and result.get("ethics_evaluation"):
+        return _case_from_block(result, arbitrator_version=arbitrator_version, code_version=code_version,
+                                question=question, decision_makers=decision_makers, affected=affected,
+                                today=today)
     if not cmap:
         raise ValueError("this Arbitrator result has no consequence map (status "
                          f"{result.get('status')!r}); there is no recommendation to record")
@@ -109,14 +190,18 @@ def case_from_arbitrator(result: dict, *, arbitrator_version: str, code_version:
             "derived_from": f"arbitrator finding {f['finding_id']}",
         })
 
-    parts = [f"Arbitrator verdict: {cmap.get('overall_verdict')} "
-             f"(ethics: {result.get('ethics_verdict')}).", cmap.get("executive_summary", "").strip()]
+    ethics = f"ethics: {result.get('ethics_verdict')}"
+    if result.get("gate_mode") == "analysis":
+        ethics = (f"ethics post-screen, from the analysis: {result.get('ethics_verdict')}; "
+                  f"pre-screen, structural estimates: {result.get('prescreen_verdict')}")
+    parts = [f"Arbitrator verdict: {cmap.get('overall_verdict')} ({ethics}).",
+             cmap.get("executive_summary", "").strip()]
     if cmap.get("recommended_mitigations"):
         parts.append("Mitigations: " + "; ".join(cmap["recommended_mitigations"]))
     if unscored:
         parts.append("Findings of unknown certainty (not recorded as predictions): " + "; ".join(unscored))
 
-    return {
+    body = {
         "question": question or result.get("raw_input") or cmap.get("proposal_description", ""),
         "recommender": {
             "system": "Arbitrator " + arbitrator_version,
@@ -133,3 +218,41 @@ def case_from_arbitrator(result: dict, *, arbitrator_version: str, code_version:
                    "map_id": cmap.get("map_id"),
                    "compendium_entries": [e["id"] for e in (result.get("compendium") or {}).get("selected", [])]},
     }
+    _add_brief(body, result.get("brief"), result.get("escalation"))
+    return body
+
+
+def _add_brief(body: dict, written: dict | None, esc: dict | None) -> None:
+    """The run's escalation (what triggered human review, if anything) and its
+    decision brief. Every analysed run has a brief (since 2026-09-29); its
+    options and provisional lean become the case's options and recommended
+    option, so a decision recorded later can say it followed the lean or
+    departed from it."""
+    if esc and esc.get("triggers"):
+        body["escalation"] = {"triggers": esc["triggers"]}
+    if not written:
+        return
+    brief = written.get("brief")
+    record = {"brief_by": written.get("model_id"), "brief_error": written.get("error")}
+    if brief:
+        record.update({k: brief.get(k) for k in (
+            "why_human_judgment", "disagreements", "case_for", "case_against", "uncertainties",
+            "decision_questions", "provisional_lean", "set_aside", "review")})
+        body["options"] = [{
+            "id": str(o["id"]).strip(),
+            "label": str(o["label"]).strip(),
+            "description": " ".join(p for p in (
+                str(o.get("consequences") or "").strip(),
+                f"Who bears the cost: {o['who_bears_cost']}." if o.get("who_bears_cost") else "",
+                {True: "Reversible.", False: "Not reversible."}.get(o.get("reversible"), ""),
+                f"For: {o['case_for']}" if o.get("case_for") else "",
+                f"Against: {o['case_against']}" if o.get("case_against") else "",
+            ) if p),
+        } for o in brief["options"]]
+        lean = brief.get("provisional_lean") or {}
+        if lean.get("option") in {o["id"] for o in body["options"]}:
+            body["recommended_option"] = lean["option"]
+            body["recommendation"] += (
+                f" Decision brief: provisional lean '{lean['option']}' (confidence {lean.get('confidence')}). "
+                f"{lean.get('reasoning') or ''} It would change if: {lean.get('would_change_if')}")
+    body["brief"] = record

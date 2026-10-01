@@ -121,7 +121,18 @@ def validate(kind: str, body: dict, author, state) -> tuple[dict, dict, list[str
 
     if kind == "case_opened":
         _only(body, {"question", "recommender", "recommendation", "recommended_option", "options",
-                     "predictions", "decision_makers", "affected", "source"}, where, errs)
+                     "predictions", "decision_makers", "affected", "source", "escalation", "brief"},
+              where, errs)
+        esc = body.get("escalation")
+        if esc is not None:
+            if not isinstance(esc, dict) or not isinstance(esc.get("triggers"), list) or not esc["triggers"]:
+                errs.append(f"{where}.escalation: must say what triggered it (a non-empty 'triggers' list)")
+        brief = body.get("brief")
+        if brief is not None:
+            if not isinstance(brief, dict):
+                errs.append(f"{where}.brief: must be an object")
+            elif brief.get("why_human_judgment") is not None and not brief.get("decision_questions"):
+                errs.append(f"{where}.brief: a brief must list the questions the decision-makers must answer")
         for k in ("question", "recommendation"):
             if not _text(body.get(k)):
                 errs.append(f"{where}: {k!r} is required")

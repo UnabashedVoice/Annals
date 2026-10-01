@@ -52,6 +52,36 @@ def render_case(case: Case, today: date | None = None) -> str:
     if b.get("recommended_option"):
         out.append(f"  Option: {case.option_label(b['recommended_option'])}")
 
+    esc = b.get("escalation")
+    if esc:
+        out += ["", "ESCALATED FOR HUMAN REVIEW"]
+        for t in esc.get("triggers", []):
+            out.append(f"  trigger [{t.get('source')}]: {t.get('detail')}")
+    br = b.get("brief")
+    if br:
+        out += ["", f"DECISION BRIEF (by {br.get('brief_by')})"]
+        if br.get("brief_error"):
+            out.append(f"  Not produced: {br['brief_error']}")
+        if br.get("why_human_judgment"):
+            out.append(f"  Judgment calls: {br['why_human_judgment']}")
+            for q in br.get("decision_questions") or []:
+                out.append(f"  To decide: {q}")
+            aside = {a.get("option"): a.get("because") for a in br.get("set_aside") or [] if isinstance(a, dict)}
+            for o in b.get("options", []):
+                out.append(f"  Option [{o['id']}] {o['label']}: {o.get('description', '')}")
+                if o["id"] in aside:
+                    out.append(f"      set aside because: {aside[o['id']]}")
+            lean = br.get("provisional_lean") or {}
+            if lean:
+                out.append(f"  Provisional lean: {lean.get('option')} (confidence {lean.get('confidence')})")
+                if lean.get("reasoning"):
+                    out.append(f"      reasoning: {lean['reasoning']}")
+                out.append(f"      would change if: {lean.get('would_change_if')}")
+            review = br.get("review") or {}
+            if review:
+                out.append(f"  Brief-writer's view: {'needs' if review.get('needed') else 'does not need'} "
+                           f"human sign-off. {review.get('why', '')}")
+
     out += ["", "PREDICTIONS"]
     for pid, p in case.predictions.items():
         pr = p["prediction"]

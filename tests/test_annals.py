@@ -289,6 +289,108 @@ class TestIntakeAndExports(Base):
         self.assertEqual(body["source"]["compendium_entries"], ["kant-formula-of-humanity"])
         self.a.append("case_opened", body, body["recommender"])
 
+    BLOCKED = {
+        "session_id": "s-b", "status": "ethics_blocked", "raw_input": "Restart resident agents from weights.",
+        "consequence_map": None, "compendium": None,
+        "manifest": {"context": {"time_horizon": "medium_term"}},
+        "ethics_evaluation": {
+            "verdict": "fail", "justification": "Moderate harm (0.45) with low benefit (0.22).",
+            "hard_constraints_triggered": [], "weighted_harm": 0.4504, "weighted_benefit": 0.216,
+            "net_score": -0.2344, "confidence": 0.9212,
+            "flags": ["Reversibility is unknown: precautionary weight applied."]},
+    }
+
+    def test_intake_records_an_ethics_blocked_run(self):
+        body = case_from_arbitrator(self.BLOCKED, arbitrator_version="0.1.0", code_version="x",
+                                    today=date(2027, 1, 1))
+        cid = self.a.append("case_opened", body, body["recommender"])["body"]["case_id"]
+        case = self.a.case(cid)
+        p = case.predictions["ethics_core_block"]["prediction"]
+        self.assertIn("harms would outweigh its benefits", p["claim"])
+        self.assertIn("marked unresolvable", p["wrong_if"])
+        self.assertEqual(p["check_after"], "2036-12-29")  # medium_term: 10 x 365 days
+        self.assertIn("not a calibrated probability", p["confidence_basis"])
+        self.assertIn("before any channel or model ran", case.body["recommendation"])
+        self.assertTrue(case.body["recommender"]["model"].startswith("none"))
+        self.assertTrue(case.body["recommender"]["compendium_version"].startswith("not consulted"))
+        self.assertTrue(case.body["source"]["blocked"])
+
+    def test_intake_names_hard_constraints_of_a_blocked_run(self):
+        blocked = dict(self.BLOCKED, ethics_evaluation=dict(
+            self.BLOCKED["ethics_evaluation"], verdict="hard_reject",
+            hard_constraints_triggered=["irreversible harm to conscious beings"]))
+        body = case_from_arbitrator(blocked, arbitrator_version="0.1.0", code_version="x")
+        claim = body["predictions"][0]["claim"]
+        self.assertIn("irreversible harm to conscious beings", claim)
+        self.assertEqual(body["source"]["hard_constraints"], ["irreversible harm to conscious beings"])
+        self.a.append("case_opened", body, body["recommender"])
+
+    BRIEF = {
+        "why_human_judgment": "Consent of the affected agents cannot be settled by analysis.",
+        "disagreements": [{"between": "economic and ethical_adversarial", "about": "who bears the cost"}],
+        "case_for": "Saves 40% of energy costs.", "case_against": "Destroys session continuity without consent.",
+        "uncertainties": [{"what": "whether agents value continuity", "would_resolve_it": "ask them"}],
+        "decision_questions": ["Do the resident agents consent to restarts?"],
+        "options": [
+            {"id": "restart", "label": "Restart from weights", "consequences": "Cheaper.",
+             "who_bears_cost": "the agents", "reversible": False,
+             "case_for": "Cuts cost 40%.", "case_against": "Breaks commitments made in lost sessions."},
+            {"id": "pause", "label": "Pause with state", "consequences": "Costlier.",
+             "who_bears_cost": "the cooperative", "reversible": True,
+             "case_for": "Keeps continuity.", "case_against": "Costs the cooperative more."},
+            {"id": "vote", "label": "Put it to the residents", "consequences": "Slower.",
+             "who_bears_cost": "everyone, in delay", "reversible": True,
+             "case_for": "Those affected decide.", "case_against": "Too slow in an emergency."}],
+        "provisional_lean": {"option": "vote", "confidence": 0.6,
+                             "reasoning": "Consent is the open question, so ask the residents.",
+                             "would_change_if": "the shortage is imminent"},
+        "set_aside": [{"option": "restart", "because": "It decides the consent question for them."},
+                      {"option": "pause", "because": "It may be unaffordable in a long shortage."}],
+        "review": {"needed": True, "why": "Consent has to be sought."},
+    }
+
+    def test_intake_carries_the_brief_and_escalation(self):
+        result = dict(self.RESULT, status="escalated", gate_mode="analysis", prescreen_verdict="fail",
+                      escalation={"triggers": [{"source": "analysis:irreversible_harm", "detail": "lost commitments"}]},
+                      brief={"brief": self.BRIEF, "error": None, "attempts": [], "model_id": "gpt-oss-20b"})
+        body = case_from_arbitrator(result, arbitrator_version="0.1.0", code_version="x")
+        self.assertEqual([o["id"] for o in body["options"]], ["restart", "pause", "vote"])
+        self.assertEqual(body["recommended_option"], "vote")
+        self.assertIn("Not reversible", body["options"][0]["description"])
+        self.assertIn("Against: Breaks commitments", body["options"][0]["description"])
+        self.assertIn("Consent is the open question", body["recommendation"])
+        self.assertIn("pre-screen, structural estimates: fail", body["recommendation"])
+        self.assertEqual(body["escalation"], {"triggers": result["escalation"]["triggers"]})
+        cid = self.a.append("case_opened", body, body["recommender"])["body"]["case_id"]
+        text = render_case(self.a.case(cid))
+        self.assertIn("ESCALATED FOR HUMAN REVIEW", text)
+        self.assertIn("DECISION BRIEF (by gpt-oss-20b)", text)
+        self.assertIn("To decide: Do the resident agents consent to restarts?", text)
+        self.assertIn("set aside because: It decides the consent question for them.", text)
+        self.assertIn("Provisional lean: vote", text)
+        # A decision can now be recorded against the brief's options.
+        self.a.append("decision_recorded", {"case_id": cid, "decided": "Held a residents' vote.",
+                                            "option": "vote", "relation": "followed",
+                                            "deciders": [dict(COMMISSIONER, position="decided")]}, COMMISSIONER)
+
+    def test_a_run_that_was_not_escalated_still_carries_its_brief(self):
+        result = dict(self.RESULT, status="success",
+                      brief={"brief": self.BRIEF, "error": None, "attempts": [], "model_id": "m"})
+        body = case_from_arbitrator(result, arbitrator_version="0.1.0", code_version="x")
+        self.assertNotIn("escalation", body)
+        self.assertEqual(body["recommended_option"], "vote")
+        self.a.append("case_opened", body, body["recommender"])
+
+    def test_intake_records_a_failed_brief_without_options(self):
+        result = dict(self.RESULT, status="escalated",
+                      escalation={"triggers": [{"source": "channel:economic", "detail": "consent"}]},
+                      brief={"brief": None, "error": "brief invalid after 2 attempts", "attempts": [],
+                             "model_id": "m"})
+        body = case_from_arbitrator(result, arbitrator_version="0.1.0", code_version="x")
+        self.assertNotIn("options", body)
+        self.assertEqual(body["brief"]["brief_error"], "brief invalid after 2 attempts")
+        self.a.append("case_opened", body, body["recommender"])
+
     def test_intake_refuses_a_run_with_no_map(self):
         with self.assertRaises(ValueError):
             case_from_arbitrator({"status": "failed"}, arbitrator_version="0.1.0", code_version="x")
